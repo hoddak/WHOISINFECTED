@@ -181,9 +181,9 @@
       setStatus('중지됨', 'warn');
     }
 
-    startBtn.addEventListener('click', startScan);
-    stopBtn.addEventListener('click', stopScan);
-    refreshBtn.addEventListener('click', refreshCameras);
+    startBtn.addEventListener('click', () => { setStatus('시작 버튼 눌림'); startScan(); });
+    stopBtn.addEventListener('click', () => { setStatus('중지 버튼 눌림'); stopScan(); });
+    refreshBtn.addEventListener('click', () => { setStatus('새로고침 버튼 눌림'); refreshCameras(); });
 
     // 제출 → Google Apps Script (익명)
     qs('#resultForm').addEventListener('submit', async (e) => {
