@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>ELISA 결과 제출</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #preview { width: 300px; height: 300px; border: 1px solid #ccc; margin-bottom: 10px; }
+    input, select, button { margin: 5px 0; padding: 8px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h2>ELISA 결과 제출</h2>
+
+  <!-- QR 코드 스캔 -->
+  <video id="preview"></video>
+  <div>스캔된 Sample ID: <span id="sampleId"></span></div>
+
+  <!-- 결과 입력 -->
+  <form id="resultForm">
+    <label>결과 선택:
+      <select id="result" required>
+        <option value="">--선택--</option>
+        <option value="Positive">Positive</option>
+        <option value="Negative">Negative</option>
+      </select>
+    </label>
+    <br />
+    <button type="submit">제출</button>
+  </form>
+
+  <div id="status"></div>
+
+  <!-- Instascan (QR 스캐너 라이브러리) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/instascan/1.0.0/instascan.min.js"></script>
+  <script>
+    let currentSampleId = "";
+
+    // QR 코드 스캐너 초기화
+    let scanner = new Instascan.Scanner({ video: document.getElementById('preview') });
+    scanner.addListener('scan', function (content) {
+      currentSampleId = content;
+      document.getElementById('sampleId').innerText = currentSampleId;
+    });
+
+    Instascan.Camera.getCameras().then(function (cameras) {
+      if (cameras.length > 0) {
+        scanner.start(cameras[0]); // 후면카메라 우선
+      } else {
+        alert('카메라를 찾을 수 없습니다.');
+      }
+    }).catch(function (e) {
+      console.error(e);
+    });
+
+    // 결과 제출 → 구글 시트
+    document.getElementById("resultForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const result = document.getElementById("result").value;
+
+      if (!currentSampleId) {
+        alert("Sample ID가 스캔되지 않았습니다.");
+        return;
+      }
+
+      try {
+        const res = await fetch("https://script.google.com/macros/s/AKfycbziU3VIgI8CvAfJYzPGBvnMhoIrOFqyEeZBHve7xWUqOiJoLVA0jSBC7FDQI-mbrKiR/exec", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sampleId: currentSampleId, result })
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+          document.getElementById("status").innerText = "제출 완료!";
+        }
+      } catch (err) {
+        console.error(err);
+        alert("제출 실패!");
+      }
+    });
+  </script>
+</body>
+</html>
