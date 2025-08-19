@@ -8,10 +8,12 @@
     body { font-family: Arial, sans-serif; margin: 16px; }
     .row { margin-bottom: 12px; }
     #reader { width: 360px; max-width: 100%; margin: 8px 0; }
-    #status { margin-top: 8px; font-size: 14px; color: #444; }
+    #status { margin-top: 8px; font-size: 14px; color: #444; white-space: pre-line; }
     button { padding: 8px 12px; font-size: 16px; margin-right: 8px; }
     select, input { padding: 8px; font-size: 16px; }
     .hint { font-size: 12px; color: #6b7280; }
+    .error { color: #b91c1c; }
+    .ok { color: #065f46; }
   </style>
   <!-- html5-qrcode (QR 전용) -->
   <script src="https://unpkg.com/html5-qrcode/minified/html5-qrcode.min.js"></script>
@@ -22,7 +24,8 @@
   <div class="row">
     <button id="startBtn">스캔 시작</button>
     <button id="stopBtn" disabled>중지</button>
-    <span class="hint">모바일 브라우저 정책상 버튼 클릭 후 카메라가 시작됩니다.</span>
+    <select id="cameraSelect" style="min-width:220px"></select>
+    <span class="hint">버튼 클릭 후 카메라 권한 요청 → 후면 카메라 선택</span>
   </div>
 
   <div id="reader"></div>
@@ -47,53 +50,106 @@
   <div id="status"></div>
 
   <script>
-    // IMPORTANT: html5-qrcode는 QR만 지원합니다. Data Matrix까지 필요하면 ZXing 계열로 교체해야 합니다.
+    // 진단 로그 도우미
+    const statusEl = document.getElementById('status');
+    function log(msg, cls) {
+      const p = document.createElement('div');
+      if (cls) p.className = cls;
+      p.textContent = msg;
+      statusEl.appendChild(p);
+    }
+    function clearStatus() { statusEl.textContent = ''; }
 
     const startBtn = document.getElementById('startBtn');
     const stopBtn  = document.getElementById('stopBtn');
-    const readerEl = document.getElementById('reader');
+    const cameraSel= document.getElementById('cameraSelect');
+    const readerId = 'reader';
     const sampleSpan = document.getElementById('sampleId');
-    const statusEl = document.getElementById('status');
 
     let html5QrCode = null;
     let isRunning = false;
     let currentSampleId = '';
+    let camerasCache = [];
 
     function setRunning(running){
       isRunning = running;
       startBtn.disabled = running;
       stopBtn.disabled  = !running;
+      cameraSel.disabled = running;
+    }
+
+    async function enumerateCamerasWithPrompt(){
+      // 일부 브라우저는 권한 허용 전에는 카메라 목록을 빈 배열로 반환함
+      try {
+        const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        // 권한 팝업을 띄우기만 하고 곧바로 정리
+        tmp.getTracks().forEach(t => t.stop());
+      } catch (e) {
+        log('카메라 권한 필요: ' + e.message, 'error');
+        throw e;
+      }
+      try {
+        const devices = await Html5Qrcode.getCameras();
+        camerasCache = devices || [];
+        cameraSel.innerHTML = '';
+        if (!devices || devices.length === 0){
+          const opt = document.createElement('option');
+          opt.textContent = '카메라 없음';
+          cameraSel.appendChild(opt);
+          return [];
+        }
+        // 후면 카메라를 기본 선택(이름 매칭)
+        devices.forEach((d, idx) => {
+          const opt = document.createElement('option');
+          opt.value = d.id;
+          opt.textContent = d.label || ('Camera ' + (idx+1));
+          cameraSel.appendChild(opt);
+        });
+        const back = devices.find(d => /back|rear|environment/i.test(d.label || '')) || devices[devices.length-1];
+        cameraSel.value = back.id;
+        log('카메라 ' + devices.length + '개 감지됨', 'ok');
+        return devices;
+      } catch (e) {
+        log('카메라 나열 실패: ' + e.message, 'error');
+        throw e;
+      }
     }
 
     async function startScan(){
-      statusEl.textContent = '';
-      if (!html5QrCode) html5QrCode = new Html5Qrcode('reader');
+      clearStatus();
+      if (location.protocol !== 'https:' && location.hostname !== 'localhost'){
+        log('HTTPS가 아니면 카메라가 차단됩니다. 주소가 https:// 로 시작해야 합니다.', 'error');
+        return;
+      }
+      if (!html5QrCode) html5QrCode = new Html5Qrcode(readerId, { verbose: false });
       try {
+        if (camerasCache.length === 0) await enumerateCamerasWithPrompt();
+        const deviceId = cameraSel.value || (camerasCache[0] && camerasCache[0].id);
+        if (!deviceId) { log('사용할 카메라가 없습니다.', 'error'); return; }
         await html5QrCode.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: 250 },
-          (decodedText, decodedResult) => {
+          deviceId,
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          (decodedText) => {
             currentSampleId = decodedText;
             sampleSpan.textContent = currentSampleId;
-            // 스캔 성공 시 즉시 멈추고 싶다면 다음 줄 주석 해제
-            // stopScan();
+            log('스캔 성공: ' + decodedText, 'ok');
           },
           (errMsg) => {
-            // 프레임별 오류는 무시 (필요시 statusEl에 표시)
+            // 프레임별 오류는 빈번 — 필요 시 아래 주석 해제해 로그 확인
+            // log('프레임 오류: ' + errMsg);
           }
         );
         setRunning(true);
       } catch (e) {
-        alert('스캔 시작 실패: ' + e.message);
+        log('스캔 시작 실패: ' + e.message, 'error');
         setRunning(false);
       }
     }
 
     async function stopScan(){
-      if (html5QrCode && isRunning){
-        try { await html5QrCode.stop(); } catch {}
-      }
+      try { if (html5QrCode && isRunning) await html5QrCode.stop(); } catch {}
       setRunning(false);
+      log('스캔 중지됨');
     }
 
     startBtn.addEventListener('click', startScan);
@@ -115,20 +171,15 @@
         });
         const data = await res.json();
         if (data.status === 'success'){
-          statusEl.textContent = '제출 완료!';
+          log('제출 완료!', 'ok');
         } else {
-          statusEl.textContent = '제출 실패(응답 에러)';
+          log('제출 실패(응답 에러)', 'error');
         }
       } catch(err){
         console.error(err);
-        alert('제출 실패: ' + err.message);
+        log('제출 실패: ' + err.message, 'error');
       }
     });
-
-    // HTTPS 강제 안내 (http로 접속 시 카메라 차단됨)
-    if (location.protocol !== 'https:' && location.hostname !== 'localhost'){
-      statusEl.textContent = '안내: HTTPS가 아니면 카메라가 동작하지 않습니다. 주소창이 https:// 로 시작하는지 확인하세요.';
-    }
   </script>
 </body>
 </html>
