@@ -6,17 +6,18 @@
   <title>ELISA 결과 제출 (QR 스캔)</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 16px; }
-    .row { margin-bottom: 12px; }
-    #reader { width: 360px; max-width: 100%; margin: 8px 0; }
-    #status { margin-top: 8px; font-size: 14px; color: #444; white-space: pre-line; }
-    button { padding: 8px 12px; font-size: 16px; margin-right: 8px; }
+    .row { margin: 10px 0; }
+    #reader { width: 360px; max-width: 100%; min-height: 240px; margin: 8px 0; background:#000; }
+    #status { margin-top: 8px; font-size: 14px; color: #111; white-space: pre-wrap; }
+    button { padding: 10px 14px; font-size: 16px; margin-right: 8px; }
     select, input { padding: 8px; font-size: 16px; }
     .hint { font-size: 12px; color: #6b7280; }
-    .error { color: #b91c1c; }
-    .ok { color: #065f46; }
+    .warn { color:#b45309; background:#fffbeb; border:1px solid #fcd34d; padding:6px 8px; border-radius:6px; }
+    .error { color:#991b1b; background:#fef2f2; border:1px solid #fecaca; padding:6px 8px; border-radius:6px; }
+    .ok { color:#065f46; background:#ecfdf5; border:1px solid #a7f3d0; padding:6px 8px; border-radius:6px; }
   </style>
   <!-- html5-qrcode (QR 전용) -->
-  <script src="https://unpkg.com/html5-qrcode/minified/html5-qrcode.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode/minified/html5-qrcode.min.js" defer></script>
 </head>
 <body>
   <h2>ELISA 결과 제출</h2>
@@ -24,11 +25,20 @@
   <div class="row">
     <button id="startBtn">스캔 시작</button>
     <button id="stopBtn" disabled>중지</button>
-    <select id="cameraSelect" style="min-width:220px"></select>
-    <span class="hint">버튼 클릭 후 카메라 권한 요청 → 후면 카메라 선택</span>
+    <button id="refreshBtn" type="button">카메라 새로고침</button>
+    <span class="hint">모바일 브라우저 정책상 버튼 클릭 후 카메라가 시작됩니다.</span>
+  </div>
+
+  <div class="row">
+    <label>카메라 선택: 
+      <select id="cameraSelect" style="min-width:260px">
+        <option value="">(검색 전)</option>
+      </select>
+    </label>
   </div>
 
   <div id="reader"></div>
+  <div id="status" class="warn">대기 중… (스캔 시작 버튼을 눌러주세요)</div>
 
   <div class="row">스캔된 Sample ID: <span id="sampleId">(없음)</span></div>
 
@@ -47,139 +57,165 @@
     </div>
   </form>
 
-  <div id="status"></div>
-
   <script>
-    // 진단 로그 도우미
-    const statusEl = document.getElementById('status');
-    function log(msg, cls) {
-      const p = document.createElement('div');
-      if (cls) p.className = cls;
-      p.textContent = msg;
-      statusEl.appendChild(p);
-    }
-    function clearStatus() { statusEl.textContent = ''; }
-
-    const startBtn = document.getElementById('startBtn');
-    const stopBtn  = document.getElementById('stopBtn');
-    const cameraSel= document.getElementById('cameraSelect');
-    const readerId = 'reader';
-    const sampleSpan = document.getElementById('sampleId');
+    // ===== 유틸 =====
+    const qs = (sel) => document.querySelector(sel);
+    const statusEl = qs('#status');
+    const sampleSpan = qs('#sampleId');
+    const startBtn = qs('#startBtn');
+    const stopBtn  = qs('#stopBtn');
+    const refreshBtn = qs('#refreshBtn');
+    const cameraSel = qs('#cameraSelect');
+    const GAS_URL  = 'https://script.google.com/macros/s/AKfycbziU3VIgI8CvAfJYzPGBvnMhoIrOFqyEeZBHve7xWUqOiJoLVA0jSBC7FDQI-mbrKiR/exec';
 
     let html5QrCode = null;
     let isRunning = false;
     let currentSampleId = '';
     let camerasCache = [];
 
+    function setStatus(text, cls=''){
+      statusEl.className = cls || '';
+      statusEl.textContent = text;
+      console.log('[STATUS]', text);
+    }
     function setRunning(running){
       isRunning = running;
       startBtn.disabled = running;
       stopBtn.disabled  = !running;
-      cameraSel.disabled = running;
     }
 
-    async function enumerateCamerasWithPrompt(){
-      // 일부 브라우저는 권한 허용 전에는 카메라 목록을 빈 배열로 반환함
-      try {
-        const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        // 권한 팝업을 띄우기만 하고 곧바로 정리
-        tmp.getTracks().forEach(t => t.stop());
-      } catch (e) {
-        log('카메라 권한 필요: ' + e.message, 'error');
+    function ensurePrereqs(){
+      if (!window.isSecureContext && location.hostname !== 'localhost'){
+        setStatus('HTTPS가 아니면 카메라가 동작하지 않습니다. 주소창이 https:// 로 시작하는지 확인하세요.', 'error');
+        return false;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+        setStatus('이 브라우저는 카메라 API를 지원하지 않습니다.', 'error');
+        return false;
+      }
+      if (!window.Html5Qrcode){
+        setStatus('로딩 중… 잠시 후 다시 시도하세요 (html5-qrcode).', 'warn');
+        return false;
+      }
+      return true;
+    }
+
+    async function refreshCameras(){
+      // 권한 팝업 유도 → 일부 브라우저는 권한 전까지 장치 목록을 못 줌
+      try{
+        const pre = await navigator.mediaDevices.getUserMedia({ video: true, audio:false });
+        pre.getTracks().forEach(t=>t.stop());
+      }catch(e){
+        setStatus('카메라 권한이 필요합니다: ' + e.message, 'error');
         throw e;
       }
-      try {
+      try{
         const devices = await Html5Qrcode.getCameras();
         camerasCache = devices || [];
         cameraSel.innerHTML = '';
         if (!devices || devices.length === 0){
           const opt = document.createElement('option');
-          opt.textContent = '카메라 없음';
+          opt.value = '';
+          opt.textContent = '(카메라 없음)';
           cameraSel.appendChild(opt);
+          setStatus('카메라를 찾을 수 없습니다.', 'error');
           return [];
         }
-        // 후면 카메라를 기본 선택(이름 매칭)
-        devices.forEach((d, idx) => {
+        devices.forEach((d, i) => {
           const opt = document.createElement('option');
           opt.value = d.id;
-          opt.textContent = d.label || ('Camera ' + (idx+1));
+          opt.textContent = d.label || ('Camera ' + (i+1));
           cameraSel.appendChild(opt);
         });
-        const back = devices.find(d => /back|rear|environment/i.test(d.label || '')) || devices[devices.length-1];
+        const back = devices.find(d => /back|rear|environment/i.test(d.label || '')) || devices[devices.length - 1];
         cameraSel.value = back.id;
-        log('카메라 ' + devices.length + '개 감지됨', 'ok');
+        setStatus(`카메라 ${devices.length}개 감지됨`, 'ok');
         return devices;
-      } catch (e) {
-        log('카메라 나열 실패: ' + e.message, 'error');
+      }catch(e){
+        setStatus('카메라 목록 가져오기 실패: ' + e.message, 'error');
         throw e;
       }
+    } }, audio:false });
+        pre.getTracks().forEach(t=>t.stop());
+      }catch(e){ /* 무시: 어차피 start()에서 다시 요청 */ }
+
+      const devices = await Html5Qrcode.getCameras();
+      if (!devices || devices.length === 0) throw new Error('카메라 장치를 찾을 수 없습니다.');
+      const back = devices.find(d => /back|rear|environment/i.test(d.label)) || devices[devices.length - 1];
+      return back.id;
     }
 
     async function startScan(){
-      clearStatus();
-      if (location.protocol !== 'https:' && location.hostname !== 'localhost'){
-        log('HTTPS가 아니면 카메라가 차단됩니다. 주소가 https:// 로 시작해야 합니다.', 'error');
-        return;
-      }
-      if (!html5QrCode) html5QrCode = new Html5Qrcode(readerId, { verbose: false });
+      if (!ensurePrereqs()) return;
+      setStatus('카메라 장치를 확인하는 중…', 'warn');
       try {
-        if (camerasCache.length === 0) await enumerateCamerasWithPrompt();
-        const deviceId = cameraSel.value || (camerasCache[0] && camerasCache[0].id);
-        if (!deviceId) { log('사용할 카메라가 없습니다.', 'error'); return; }
+        if (!window.Html5Qrcode) { setStatus('라이브러리 로딩 지연. 잠시 후 재시도.', 'warn'); return; }
+        if (!html5QrCode) html5QrCode = new Html5Qrcode('reader');
+        if (camerasCache.length === 0) await refreshCameras();
+        const camId = cameraSel.value || (camerasCache[0] && camerasCache[0].id);
+        if (!camId) { setStatus('선택할 카메라가 없습니다.', 'error'); return; }
         await html5QrCode.start(
-          deviceId,
-          { fps: 10, qrbox: { width: 250, height: 250 } },
+          { deviceId: { exact: camId } },
+          { fps: 10, qrbox: 250 },
           (decodedText) => {
             currentSampleId = decodedText;
             sampleSpan.textContent = currentSampleId;
-            log('스캔 성공: ' + decodedText, 'ok');
+            setStatus('스캔 성공: ' + decodedText, 'ok');
           },
-          (errMsg) => {
-            // 프레임별 오류는 빈번 — 필요 시 아래 주석 해제해 로그 확인
-            // log('프레임 오류: ' + errMsg);
-          }
+          () => {}
         );
         setRunning(true);
-      } catch (e) {
-        log('스캔 시작 실패: ' + e.message, 'error');
+        setStatus('스캔 중… QR 코드를 프레임 중앙에 맞추세요.', 'ok');
+      } catch (e){
+        console.error(e);
         setRunning(false);
+        setStatus('시작 실패: ' + (e && e.message ? e.message : e), 'error');
       }
     }
 
     async function stopScan(){
-      try { if (html5QrCode && isRunning) await html5QrCode.stop(); } catch {}
+      try {
+        if (html5QrCode && isRunning) await html5QrCode.stop();
+      } catch(e) { /* ignore */ }
       setRunning(false);
-      log('스캔 중지됨');
+      setStatus('중지됨', 'warn');
     }
 
     startBtn.addEventListener('click', startScan);
     stopBtn.addEventListener('click', stopScan);
+    refreshBtn.addEventListener('click', refreshCameras);
 
     // 제출 → Google Apps Script (익명)
-    document.getElementById('resultForm').addEventListener('submit', async (e) => {
+    qs('#resultForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const result = document.getElementById('result').value;
+      const result = qs('#result').value;
       if (!currentSampleId){
         alert('Sample ID가 스캔되지 않았습니다.');
         return;
       }
       try {
-        const res = await fetch('https://script.google.com/macros/s/AKfycbziU3VIgI8CvAfJYzPGBvnMhoIrOFqyEeZBHve7xWUqOiJoLVA0jSBC7FDQI-mbrKiR/exec', {
+        setStatus('제출 중…', 'warn');
+        const res = await fetch(GAS_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sampleId: currentSampleId, result })
         });
         const data = await res.json();
         if (data.status === 'success'){
-          log('제출 완료!', 'ok');
+          setStatus('제출 완료!', 'ok');
         } else {
-          log('제출 실패(응답 에러)', 'error');
+          setStatus('제출 실패(응답 에러)', 'error');
         }
       } catch(err){
         console.error(err);
-        log('제출 실패: ' + err.message, 'error');
+        setStatus('제출 실패: ' + err.message, 'error');
       }
     });
+
+    // 초기 경고 (HTTP 접속 등)
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost'){
+      setStatus('안내: HTTPS가 아니면 카메라가 동작하지 않습니다. 주소창이 https:// 로 시작하는지 확인하세요.', 'error');
+    }
   </script>
 </body>
 </html>
