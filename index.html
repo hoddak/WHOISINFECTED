@@ -22,6 +22,10 @@
 <body>
   <h2>ELISA 결과 제출</h2>
 
+<!-- 환경 진단 버튼 -->
+<button id="diagnosticBtn">환경 진단</button>
+<div id="diagOutput" style="white-space: pre-line; margin:10px 0; border:1px solid #ccc; padding:5px;"></div>
+  
   <div class="row">
     <button id="startBtn">스캔 시작</button>
     <button id="stopBtn" disabled>중지</button>
@@ -214,8 +218,29 @@
 
     // 초기 경고 (HTTP 접속 등)
     if (location.protocol !== 'https:' && location.hostname !== 'localhost'){
-      setStatus('안내: HTTPS가 아니면 카메라가 동작하지 않습니다. 주소창이 https:// 로 시작하는지 확인하세요.', 'error');
+  setStatus('안내: HTTPS가 아니면 카메라가 동작하지 않습니다. 주소창이 https:// 로 시작하는지 확인하세요.', 'error');
+}
+
+// 여기 바로 아래에 붙여!
+document.getElementById("diagnosticBtn").addEventListener("click", async () => {
+  let lines = [];
+  lines.push("UA: " + navigator.userAgent);
+  lines.push("Secure: " + (window.isSecureContext ? "true" : "false"));
+  lines.push("Protocol: " + window.location.protocol);
+  lines.push("mediaDevices: " + (!!navigator.mediaDevices));
+  lines.push("getUserMedia: " + (!!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)));
+  try {
+    if (navigator.permissions) {
+      let camPerm = await navigator.permissions.query({ name: "camera" });
+      lines.push("Permissions(camera): " + camPerm.state);
     }
+  } catch(e) {
+    lines.push("Permissions API not available");
+  }
+  document.getElementById("diagOutput").innerText = lines.join("\n");
+});
+
   </script>
 </body>
 </html>
+
