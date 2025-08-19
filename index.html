@@ -10,6 +10,15 @@
   </style>
 </head>
 <body>
+  <script>
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => {
+        console.log("카메라 권한 허용됨");
+      })
+      .catch(err => {
+        alert("카메라 권한이 필요합니다: " + err);
+      });
+  </script>
   <h2>ELISA 결과 제출</h2>
 
   <!-- QR 코드 스캔 -->
@@ -81,3 +90,4 @@
   </script>
 </body>
 </html>
+
